@@ -558,6 +558,31 @@ void PaPulseAudio_StreamUnderflowCb( pa_stream *s,
                                  0 );
 }
 
+void PaPulseAudio_StreamOverflowCb( pa_stream *s,
+                                     void *userdata )
+{
+    PaPulseAudio_Stream *stream = (PaPulseAudio_Stream *) userdata;
+    pa_buffer_attr *spec = NULL;
+
+    /* If this is null we have big problems and we probably are out of memory */
+    if( !s )
+    {
+        PA_DEBUG( ("Portaudio %s: Invalid stream",
+                   __FUNCTION__) );
+        return;
+    }
+
+    spec = (pa_buffer_attr *)pa_stream_get_buffer_attr(s);
+    PA_DEBUG( ("Portaudio %s: PulseAudio '%s' with delay: %ld stream has overflowed\n",
+               __FUNCTION__,
+               pa_stream_get_device_name(s),
+               spec,
+               spec->tlength) );
+
+    pa_threaded_mainloop_signal( stream->mainloop,
+                                 0 );
+}
+
 /* Initialize HostAPI */
 PaError PaPulseAudio_Initialize( PaUtilHostApiRepresentation ** hostApi,
                                  PaHostApiIndex hostApiIndex )
@@ -1137,6 +1162,9 @@ PaError OpenStream( struct PaUtilHostApiRepresentation *hostApi,
             pa_stream_set_started_callback( stream->inputStream,
                                             PaPulseAudio_StreamStartedCb,
                                             stream );
+            pa_stream_set_overflow_callback( stream->inputStream,
+                                              PaPulseAudio_StreamOverflowCb,
+                                              stream);
         }
         else
         {
@@ -1235,11 +1263,12 @@ PaError OpenStream( struct PaUtilHostApiRepresentation *hostApi,
             goto openstream_error;
         }
 
+        char chmap[100];
         stream->outputStream =
             pa_stream_new( pulseaudioHostApi->context,
                            stream->outputStreamName,
                            &stream->outputSampleSpec,
-                           NULL );
+                          NULL );
 
         if( stream->outputStream != NULL )
         {

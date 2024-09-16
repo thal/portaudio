@@ -169,6 +169,8 @@ void _PaPulseAudio_Read( PaPulseAudio_Stream *stream,
         _PaPulseAudio_WriteRingBuffer( &stream->inputRing, pulseaudioData, length );
     }
 
+    printf("Peeked %ld bytes,dropping\n", length);
+
     pa_stream_drop( stream->inputStream );
 
     pulseaudioData = NULL;
@@ -215,9 +217,10 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
 
     if( stream->outputStream )
     {
+        // Input and output may be different sizes
         /* Calculate how many bytes goes to one frame */
-        pulseaudioInputBytes = pulseaudioOutputBytes = (hostFramesPerBuffer * stream->outputFrameSize);
-
+        /*pulseaudioInputBytes = */pulseaudioOutputBytes = (hostFramesPerBuffer * stream->outputFrameSize);
+        printf("paInbytes %ld, paOutbytes %ld\n", pulseaudioInputBytes, pulseaudioOutputBytes);
         if( stream->bufferProcessor.streamCallback )
         {
             isOutputCb = 1;
@@ -229,8 +232,10 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
      */
     if( stream->inputStream )
     {
-        pulseaudioInputBytes = pulseaudioOutputBytes = (hostFramesPerBuffer * stream->inputFrameSize);
+        // Input and output may be different sizes
+        pulseaudioInputBytes /*= pulseaudioOutputBytes*/ = (hostFramesPerBuffer * stream->inputFrameSize);
 
+        printf("paInbytes %ld, paOutbytes %ld\n", pulseaudioInputBytes, pulseaudioOutputBytes);
         if( stream->bufferProcessor.streamCallback )
         {
             isInputCb = 1;
@@ -242,12 +247,21 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
      * mono to monomono which is stereo.
      * Then just read half and copy
      */
-    if( isOutputCb &&
-        stream->outputSampleSpec.channels == 2 &&
-        stream->inputSampleSpec.channels == 1)
-    {
-        pulseaudioInputBytes /= 2;
-    }
+    // This causes the ring buffer to drain slower than its filled, resulting in garbage after 11 seconds
+    // if( isOutputCb &&
+    //     stream->outputSampleSpec.channels == 2 &&
+    //     stream->inputSampleSpec.channels == 1)
+    // {
+    //     pulseaudioInputBytes /= 2;
+    // }
+
+    printf("%s for %s%s: length %ld, hostFramesPerBuffer %ld, pulseauidoOutputBytes %ld, pulseaudioInputBytes %ld\n",
+           __FUNCTION__, (isInputCb ? "input": ""), (isOutputCb ? "output" : ""),
+           length,
+           hostFramesPerBuffer,
+           pulseaudioOutputBytes,
+           pulseaudioInputBytes);
+
 
     if( !stream->isActive && stream->pulseaudioIsActive && stream->outputStream)
     {
@@ -277,8 +291,9 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
          * see if we have enough stuff to feed record stream
          * If not then bail out.
          */
+        size_t ringAvail;
         if( isInputCb &&
-            PaUtil_GetRingBufferReadAvailable(&stream->inputRing) < pulseaudioInputBytes )
+            (ringAvail = PaUtil_GetRingBufferReadAvailable(&stream->inputRing)) < pulseaudioInputBytes )
         {
             if(isOutputCb && (pulseaudioOutputWritten < length) && !stream->missedBytes)
             {
@@ -288,13 +303,19 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
             {
                 stream->missedBytes = 0;
             }
+            printf("exiting at %d, %ld bytes readable, host needs %ld\n", __LINE__, ringAvail, pulseaudioInputBytes);
+            if( stream->missedBytes) {
+                printf("missed %ld\n", stream->missedBytes);
+            }
             break;
         }
-        else if( pulseaudioOutputWritten >= length)
-        {
-            stream->missedBytes = 0;
-            break;
-        }
+        // This causes the loop to end before enough samples have been written
+        //else if( pulseaudioOutputWritten >= length * 2)
+        //{
+        //    stream->missedBytes = 0;
+        //    printf("exiting at %d, wrote %ld of %ld requested\n", __LINE__, pulseaudioOutputWritten, pulseaudioOutputBytes);
+        //    break;
+        //}
 
         if(  stream->outputStream )
         {
@@ -362,6 +383,7 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
             PaUtil_SetOutputFrameCount( &stream->bufferProcessor,
                                         hostFramesPerBuffer );
 
+            printf("Writing %ld bytes\n", pulseaudioOutputBytes);
             if( pa_stream_write( stream->outputStream,
                                  bufferData,
                                  pulseaudioOutputBytes,
@@ -374,11 +396,14 @@ static int _PaPulseAudio_ProcessAudio(PaPulseAudio_Stream *stream,
             }
 
             pulseaudioOutputWritten += pulseaudioOutputBytes;
+           // printf("%s Wrote %ld bytes, total %ld\n", __FUNCTION__, pulseaudioOutputBytes, pulseaudioOutputWritten );
         }
 
         hostFrameCount =
             PaUtil_EndBufferProcessing( &stream->bufferProcessor,
                                         &ret );
+
+        //printf("%s hostFrameCount %ld\n", __FUNCTION__, hostFrameCount );
 
         PaUtil_EndCpuLoadMeasurement( &stream->cpuLoadMeasurer,
                                       hostFrameCount );
@@ -393,6 +418,7 @@ void PaPulseAudio_StreamRecordCb( pa_stream * s,
 {
     PaPulseAudio_Stream *pulseaudioStream = (PaPulseAudio_Stream *) userdata;
 
+    printf("\n===%s=== %ld bytes\n", __FUNCTION__, length);
     _PaPulseAudio_Read( pulseaudioStream, length );
 
     /* Let's handle when output happens if Duplex
